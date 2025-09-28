@@ -1,0 +1,288 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Driving Test Booking</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;max-width:900px;margin:18px auto;padding:12px}
+    .card{border:1px solid #eee;padding:14px;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.03)}
+    .row{margin-bottom:12px}
+    label{display:block;margin-bottom:6px;font-weight:600}
+    input[type="text"], input[type="tel"], textarea{width:100%;padding:8px;border:1px solid #ddd;border-radius:6px}
+    .hidden{display:none}
+    .btn{display:inline-block;padding:8px 12px;border-radius:8px;border:0;background:#1565c0;color:white;cursor:pointer}
+    .btn:disabled{opacity:0.5;cursor:default}
+    .dateGrid{display:flex;flex-wrap:wrap;gap:8px}
+    .dateBtn{padding:8px 10px;border-radius:8px;border:1px solid #ddd;background:#fff;cursor:pointer}
+    .dateBtn.full{background:#f3f3f3;color:#999;cursor:default}
+    .dateBtn.selected{outline:3px solid rgba(21,101,192,0.2)}
+    .small{font-size:0.9rem;color:#666}
+    .error{color:#c62828}
+    .success{color:#2e7d32}
+  </style>
+</head>
+<body>
+  <h2>Driving Test Booking</h2>
+  <div class="card">
+    <div class="row">
+      <label>Have you already received a Branch driving Test?</label>
+      <label><input type="radio" name="already" value="Yes"> Yes</label>
+      <label><input type="radio" name="already" value="No" checked> No</label>
+    </div>
+
+    <form id="bookingForm">
+      <div id="fields-common">
+        <div class="row">
+          <label for="name">Full name</label>
+          <input id="name" name="name" type="text" required />
+        </div>
+      </div>
+
+      <div id="if-yes" class="hidden">
+        <div class="row">
+          <label for="vehicleNumber">Vehicle Number Assigned</label>
+          <input id="vehicleNumber" name="vehicleNumber" type="text" />
+        </div>
+        <div class="row">
+          <label for="contactYes">Contact number</label>
+          <input id="contactYes" name="contactYes" type="tel" />
+        </div>
+      </div>
+
+      <div id="if-no">
+        <div class="row">
+          <label for="contactNo">Contact number</label>
+          <input id="contactNo" name="contactNo" type="tel" />
+        </div>
+
+        <div class="card" style="background:#fafafa;margin-bottom:12px">
+          <div class="small">
+            <strong>Prerequisites — To be eligible, the driver must meet all of the following:</strong>
+            <ul>
+              <li>Driving Experience – at least one year of regular driving experience.</li>
+              <li>License – hold a valid and active driver’s license for the requested vehicle type.</li>
+              <li>Accident Record – no record of serious preventable accidents within the past 12 months.</li>
+              <li>Work Conduct – recognized as diligent and safety-minded.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="row">
+          <label>Please do you meet all 4 prerequisites?</label>
+          <label><input type="radio" name="prereq" value="Yes"> Yes</label>
+          <label><input type="radio" name="prereq" value="No" checked> No</label>
+        </div>
+
+        <div id="prereq-yes-section" class="hidden">
+          <div class="row">
+            <label>Select a Tuesday (only Tuesdays are active; each date allows 4 bookings)</label>
+            <div id="dateContainer" class="dateGrid small">Loading available Tuesdays…</div>
+            <div id="dateMsg" class="small"></div>
+          </div>
+        </div>
+
+        <div id="prereq-no-section" class="hidden">
+          <div class="row">
+            <div class="error">Sorry, you do not qualify for a Test at this time.</div>
+            <label for="reasonNotQualified">Please tell us which prerequisite you do not meet</label>
+            <textarea id="reasonNotQualified" rows="3"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <button class="btn" id="submitBtn" type="button">Submit</button>
+        <span id="formMsg" class="small"></span>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    // === CONFIG ===
+    const API_URL = "https://script.google.com/macros/s/AKfycbxiHDtlfDJ1M8uk2e3Ct3XzAB5Dal0VCQIaKsBaB6v8vcamDxb79HU1oAuIHAxp4-k1/exec"; // e.g. https://script.google.com/macros/s/AKf.../exec
+    const MAX_PER_DATE = 4;
+    const LOOKAHEAD_WEEKS = 14; // how many weeks of Tuesdays to show
+
+    // === UI helpers ===
+    const q = (s) => document.querySelector(s);
+    const qa = (s) => Array.from(document.querySelectorAll(s));
+
+    let selectedDate = '';
+
+    function show(selector, yes) { q(selector).classList.toggle('hidden', !yes); }
+    function setMsg(text, cls) {
+      const el = q('#formMsg');
+      el.textContent = text || '';
+      el.className = cls ? cls : 'small';
+    }
+
+    // Toggle form parts
+    function handleAlreadyChange() {
+      const val = document.querySelector('input[name="already"]:checked').value;
+      if (val === 'Yes') {
+        show('#if-yes', true);
+        show('#if-no', false);
+      } else {
+        show('#if-yes', false);
+        show('#if-no', true);
+      }
+    }
+
+    function handlePrereqChange() {
+      const val = document.querySelector('input[name="prereq"]:checked').value;
+      if (val === 'Yes') {
+        show('#prereq-yes-section', true);
+        show('#prereq-no-section', false);
+      } else {
+        show('#prereq-yes-section', false);
+        show('#prereq-no-section', true);
+      }
+    }
+
+    // Generate next Tuesdays
+    function getNextTuesdays(weeks) {
+      const out = [];
+      const today = new Date();
+      // find next Tuesday (2: Tuesday where 0=Sun)
+      const day = today.getDay();
+      const daysUntilTuesday = (9 - day) % 7; // if today is Tue (2), gives 0
+      let cur = new Date(today);
+      cur.setDate(today.getDate() + daysUntilTuesday);
+      // push for 'weeks' weeks
+      for (let i = 0; i < weeks; i++) {
+        const d = new Date(cur);
+        d.setDate(cur.getDate() + i * 7);
+        const y = d.getFullYear();
+        const m = String(d.getMonth()+1).padStart(2,'0');
+        const dd = String(d.getDate()).padStart(2,'0');
+        out.push({ date: `${y}-${m}-${dd}`, label: d.toDateString() });
+      }
+      return out;
+    }
+
+    // Fetch booking counts from backend
+    async function fetchCounts() {
+      try {
+        const res = await fetch(API_URL + '?action=status');
+        const json = await res.json();
+        if (json && json.success) return json.counts || {};
+        else return {};
+      } catch (e) {
+        console.warn('Could not fetch counts', e);
+        return {};
+      }
+    }
+
+    // Render dates
+    async function renderDates() {
+      const container = q('#dateContainer');
+      container.innerHTML = 'Loading available Tuesdays...';
+      const counts = await fetchCounts();
+      const tues = getNextTuesdays(LOOKAHEAD_WEEKS);
+      container.innerHTML = '';
+      tues.forEach(t => {
+        const count = counts[t.date] || 0;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'dateBtn' + (count >= MAX_PER_DATE ? ' full' : '');
+        btn.textContent = `${t.label} (${count}/${MAX_PER_DATE})`;
+        if (count >= MAX_PER_DATE) {
+          btn.disabled = true;
+        } else {
+          btn.addEventListener('click', () => {
+            // clear previous
+            qa('.dateBtn').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            selectedDate = t.date;
+            q('#dateMsg').textContent = `Selected ${t.label}`;
+          });
+        }
+        container.appendChild(btn);
+      });
+    }
+
+    // Form submit
+    async function submitForm() {
+      setMsg('');
+      const already = document.querySelector('input[name="already"]:checked').value;
+      const name = q('#name').value.trim();
+      if (!name) { setMsg('Please enter name', 'error'); return; }
+
+      if (already === 'Yes') {
+        const vehicleNumber = q('#vehicleNumber').value.trim();
+        const contactNumber = q('#contactYes').value.trim();
+        const payload = {
+          alreadyReceived: 'Yes',
+          name, vehicleNumber, contactNumber
+        };
+        await postToApi(payload);
+      } else {
+        const contactNumber = q('#contactNo').value.trim();
+        const prereq = document.querySelector('input[name="prereq"]:checked').value;
+        if (prereq === 'Yes') {
+          if (!selectedDate) { setMsg('Please select a Tuesday date', 'error'); return; }
+          const payload = {
+            alreadyReceived: 'No',
+            name,
+            contactNumber,
+            prerequisitesMet: 'Yes',
+            dateSelected: selectedDate
+          };
+          await postToApi(payload);
+        } else {
+          const reason = q('#reasonNotQualified').value.trim();
+          if (!reason) { setMsg('Please explain which prerequisite you do not meet', 'error'); return; }
+          const payload = {
+            alreadyReceived: 'No',
+            name,
+            contactNumber,
+            prerequisitesMet: 'No',
+            reasonNotQualified: reason
+          };
+          await postToApi(payload);
+        }
+      }
+    }
+
+    async function postToApi(payload) {
+      q('#submitBtn').disabled = true;
+      setMsg('Submitting...', '');
+      try {
+        const res = await fetch(API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const json = await res.json();
+        if (json && json.success) {
+          setMsg('Thank you — your submission was saved.', 'success');
+          // Refresh date list
+          selectedDate = '';
+          renderDates();
+          // optionally reset form
+          // document.getElementById('bookingForm').reset();
+        } else {
+          setMsg(json.message || 'Server error', 'error');
+        }
+      } catch (err) {
+        console.error(err);
+        setMsg('Network or CORS error. Make sure the Apps Script Web App is deployed and API_URL is correct.', 'error');
+      } finally {
+        q('#submitBtn').disabled = false;
+      }
+    }
+
+    // ===== init =====
+    qa('input[name="already"]').forEach(el => el.addEventListener('change', handleAlreadyChange));
+    qa('input[name="prereq"]').forEach(el => el.addEventListener('change', handlePrereqChange));
+    q('#submitBtn').addEventListener('click', submitForm);
+
+    // initial state
+    handleAlreadyChange();
+    handlePrereqChange();
+    // load date buttons
+    renderDates();
+  </script>
+</body>
+</html>
